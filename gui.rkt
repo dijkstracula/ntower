@@ -2,10 +2,10 @@
 
 (require racket/gui
          racket/draw
-         "racket-tower.rkt")
+         "ntower.rkt")
 
 ;;; default scale factor.  Probably a constant.
-(define pixels-per-gameplay-unit 50)
+(define pixels-per-gameplay-unit 64)
 
 
 
@@ -31,11 +31,29 @@
 
 (define space-colour (make-object color% 5 5 50))
 
+(define skyline0-bitmap (read-bitmap "textures/skyline0.png"))
+(define skyline1-bitmap (read-bitmap "textures/skyline1.png"))
+(define skyline2-bitmap (read-bitmap "textures/skyline2.png"))
+
+; texture for gameplay window
 (define rock-stipple (new brush%
-                       [stipple (read-bitmap "rock.png")]))
+                          [stipple (read-bitmap "textures/rock.png")]))
+
+; rock colour for map window
+(define rock-brush (new brush%
+                        [color (make-object color% 145 124 6)]))
 
 (define (between val x y)
   (and (>= val x) (< val y)))
+
+;;; draw-skyline: dc bitmap
+; draw the bitmap at the ground level.
+(define (draw-skyline dc bitmap)
+  (let ([brush (new brush% [stipple bitmap])])
+    (send dc set-brush brush)
+    (send dc draw-rectangle
+          0 (- (* pixels-per-gameplay-unit AGROUND-LEVELS) (send bitmap get-height))
+          dx (send bitmap get-height))))
 
 ;;; colour-lerp
 ; produce a mix of the two supplied colours.
@@ -47,16 +65,49 @@
         [b (+ (* (send c1 blue) n)
               (* (send c2 blue) (- 1 n)))])
     (make-object color% (truncate r) (truncate g) (truncate b))))
-        
+
 
 ;;; sky-colour time -> color%
 ; Produce the colour of the sky given a time of day.
 ; TODO: night/day cycles
 (define (sky-colour time)
   day-colour)
-  
+
 
 ;;;;;;;;;;;;;;;;;; canvas classes ;;;;;;;;;;;;;;;;;;;
+
+;;; map-canvas
+(define map-canvas%
+  (class canvas%
+    (inherit get-width
+             get-height
+             get-view-start
+             get-client-size
+             refresh)
+    (super-new)
+    
+    (define/public (render dc state vp)
+      (render-background dc state)
+      (render-viewport dc vp))
+    
+    (define/private (render-background dc state)
+      (let ([ground (* (get-height) (/ AGROUND-LEVELS GAMEPLAY-LEVELS))])
+        (send dc set-pen "black" 0 'transparent)
+        ; Draw the sky
+        (send dc set-brush (new brush% [color (sky-colour (send state get-time))]))
+        (send dc draw-rectangle 0 0 (get-width) ground)
+        ; draw the ground
+        (send dc set-brush rock-brush)
+        (send dc draw-rectangle 0 ground (get-width) (- (get-height) ground))))
+    
+    (define/private (render-viewport dc vp)
+      (let ([x (* (get-width) (/ (viewport-x vp) GAMEPLAY-WIDTH))]
+            [y (* (get-height) (/ (viewport-y vp) GAMEPLAY-LEVELS))]
+            [w (* (get-width) (/ (viewport-width vp) GAMEPLAY-WIDTH))]
+            [h (* (get-height) (/ (viewport-height vp) GAMEPLAY-LEVELS))])
+        (send dc set-pen "black" 1 'solid)
+        (send dc set-brush "black" 'transparent)
+        (send dc draw-rectangle x y w h)))))
 
 ;;; render-canvas
 ; The region we will render the game into.
@@ -74,7 +125,7 @@
     
     ; render: dc state -> void
     (define/public (render dc state)
-      (let ([vp (get-viewport)])
+      (let ([vp (get-viewport/screen)])
         (send dc set-clipping-rect
               (viewport-x vp) (viewport-y vp)
               (viewport-width vp) (viewport-height vp))
@@ -91,9 +142,15 @@
                [sky-colour (colour-lerp (sky-colour (send state get-time))
                                         space-colour
                                         ratio)])
+          (send dc set-pen "black" 0 'transparent)
           ; Draw the sky
           (send dc set-brush (new brush% [color sky-colour]))
           (send dc draw-rectangle (viewport-x vp) (viewport-y vp) (viewport-width vp) (viewport-height vp))
+          ; Draw background cityscape
+          (send dc set-brush skyline-stipple)
+          (send dc draw-rectangle
+                0 (- (* pixels-per-gameplay-unit AGROUND-LEVELS) (send skyline-bitmap get-height))
+                dx (send skyline-bitmap get-height))
           ; Draw the ground
           (send dc set-brush rock-stipple)
           (send dc draw-rectangle
@@ -109,45 +166,68 @@
     
     ;;;;;;;;; helpers
     
-    ; get-viewport: -> viewport
-    ; produces the active viewport.
-    (define/private (get-viewport)
+    ; get-viewpor/screent: -> viewport
+    ; produces the active viewport in screen coordinates (e.g. pixels)
+    (define/private (get-viewport/screen)
       (define-values (x y) (get-view-start))
       (define-values (w h) (get-client-size))
-      (viewport x y w h))))
+      (viewport x y w h))
+    
+    ; get-viewport/world: -> viewport
+    ; produces the active viewport in world coordinates
+    (define/public (get-viewport/world)
+      (define-values (x y) (get-view-start))
+      (define-values (w h) (get-client-size))
+      (viewport (/ x pixels-per-gameplay-unit)
+                (/ y pixels-per-gameplay-unit)
+                (/ w pixels-per-gameplay-unit)
+                (/ h pixels-per-gameplay-unit)))))
 
-
-
-(define tower-gameplay-window%
+(define tower-gui
   (class object%
     (init-field state)
     
     ;gameplay window
-    (define frame
+    (define gameplay-frame
       (new frame%
            [label "Nathan Towers"]
            [width 800]
            [height 600]))
-    
-    ;viewport
-    (define canvas
+    (define gameplay-canvas
       (new render-canvas%
-           [parent frame]
+           [parent gameplay-frame]
            [paint-callback
             (λ (canvas dc)
-              (send canvas render dc state))]))
+              (send canvas render dc state)
+              (send map-canvas on-paint))]))
     
-    ; Centre the viewport in the centre of the ground floor
-    (send canvas init-auto-scrollbars
-          (- (* pixels-per-gameplay-unit GAMEPLAY-WIDTH) 400)
-          (- (* pixels-per-gameplay-unit GAMEPLAY-LEVELS) 500)
-          0.5 (/ AGROUND-LEVELS GAMEPLAY-LEVELS))
+    (define map
+      (new frame%
+           [label "Map"]
+           [width 300]
+           [height (* 300 (/ GAMEPLAY-LEVELS GAMEPLAY-WIDTH))]))
+    (define map-canvas
+      (new map-canvas%
+           [parent map]
+           [paint-callback
+            (λ (canvas dc)
+              (send canvas render dc state (send gameplay-canvas get-viewport/world)))]))
+    
+    
+    
+    ;Centre the viewport in the centre of the ground floor
+    (send gameplay-canvas init-auto-scrollbars
+          (* pixels-per-gameplay-unit GAMEPLAY-WIDTH)
+          (* pixels-per-gameplay-unit GAMEPLAY-LEVELS)
+          0.5
+          (- (/ AGROUND-LEVELS GAMEPLAY-LEVELS) .06))
     
     ; show everything
-    (send frame show #t)
+    (send gameplay-frame show #t)
+    (send map show #t)
     
     (super-new)))
 
-(define game-state (new game-state%))
 
-(new tower-gameplay-window% [state game-state])
+(define game-state (new game-state%))
+(new tower-gui [state game-state])
