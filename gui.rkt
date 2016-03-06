@@ -46,9 +46,9 @@
 (define (between val x y)
   (and (>= val x) (< val y)))
 
-;;; draw-skyline: dc bitmap
+;;; draw-skyline: dc dx bitmap
 ; draw the bitmap at the ground level.
-(define (draw-skyline dc bitmap)
+(define (draw-skyline dc dx bitmap)
   (let ([brush (new brush% [stipple bitmap])])
     (send dc set-brush brush)
     (send dc draw-rectangle
@@ -73,6 +73,13 @@
 (define (sky-colour time)
   day-colour)
 
+;;;;;;;;;;;;;;;;;; clock rendering ;;;;;;;;;;;;;;;;;;;
+
+
+; time-to-arc time -> radian
+(define (time-to-arc t)
+  (- (/ pi 2)
+     (* t 2 pi)))
 
 ;;;;;;;;;;;;;;;;;; canvas classes ;;;;;;;;;;;;;;;;;;;
 
@@ -147,10 +154,9 @@
           (send dc set-brush (new brush% [color sky-colour]))
           (send dc draw-rectangle (viewport-x vp) (viewport-y vp) (viewport-width vp) (viewport-height vp))
           ; Draw background cityscape
-          (send dc set-brush skyline-stipple)
-          (send dc draw-rectangle
-                0 (- (* pixels-per-gameplay-unit AGROUND-LEVELS) (send skyline-bitmap get-height))
-                dx (send skyline-bitmap get-height))
+          (draw-skyline dc dx skyline0-bitmap)
+          (draw-skyline dc dx skyline1-bitmap)
+          (draw-skyline dc dx skyline2-bitmap)
           ; Draw the ground
           (send dc set-brush rock-stipple)
           (send dc draw-rectangle
@@ -183,6 +189,33 @@
                 (/ w pixels-per-gameplay-unit)
                 (/ h pixels-per-gameplay-unit)))))
 
+(define clock-canvas%
+  (class canvas%
+    (inherit get-width
+             get-height
+             get-view-start
+             get-client-size
+             refresh)
+    (super-new)
+    
+    ; clock-hand-path angle float -> path
+    (define/private (clock-hand-path ang hand-scale)
+      (let* ([p (new dc-path%)]
+             [x-radius (/ (get-width) 2)]
+             [y-radius (/ (get-height) 2)])
+        (send p move-to x-radius y-radius)
+        (send p line-to
+              (+ x-radius (* hand-scale (cos ang)))
+              (+ y-radius (* hand-scale y-radius (- (sin ang) 0))))
+        p))
+    
+    ; draw-clock dc time time -> void
+    (define/public (draw-clock dc hour min)
+      (send dc draw-ellipse 0 0 (get-width) (get-height))
+      (print hour)
+      ; (send dc draw-path (clock-hand-path (time-to-arc (/ hour 12)) 0.8))
+      (send dc draw-path (clock-hand-path (time-to-arc (/ min 60)) 0.5)))))
+
 (define tower-gui
   (class object%
     (init-field state)
@@ -214,6 +247,21 @@
               (send canvas render dc state (send gameplay-canvas get-viewport/world)))]))
     
     
+    (define info
+      (new frame%
+           [label "Info"]))
+    (define clock-canvas
+      (new clock-canvas%
+           [parent info]
+           [min-width 100]
+           [min-height 100]
+           [paint-callback
+            (λ (canvas dc)
+              (let* ([hour (truncate (/ (send state get-time) 60))]
+                     [min (modulo (send state get-time) 60)])
+                (send canvas draw-clock dc hour min)))]))
+    
+    
     
     ;Centre the viewport in the centre of the ground floor
     (send gameplay-canvas init-auto-scrollbars
@@ -225,6 +273,7 @@
     ; show everything
     (send gameplay-frame show #t)
     (send map show #t)
+    (send info show #t)
     
     (super-new)))
 
