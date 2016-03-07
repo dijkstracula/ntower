@@ -40,14 +40,23 @@
   
   (field
    ; The current time of day, in seconds.  Game starts at 5 AM.
-   [time (* 5 60)]
+   [time (* 05 60)]
 
    ; The current day.
-   [day 0])
+   [day 0]
+
+   ; Money.
+   [money 10000]
+
+   ; Weather.  Defaults to sunny.
+   [weather 'sunny]
+
+   ; milliseconds since previous call to tick
+   [old-ticks 0])
   
-  (define MAX-TIME 3)
-  
-  (define/public (tick steps)
+  (define MAX-TIME (* 24 60))
+          
+  (define/public (increment-time steps)
     (let ([t (+ time steps)])
       (if (< t MAX-TIME)
           (set! time t)
@@ -60,5 +69,7 @@
     ; accessors
     (define/public (get-time) time)
     (define/public (get-day) day)
+    (define/public (get-money) money)
+    (define/public (get-status-msg) (format "~a" weather))
 
   (super-new)))

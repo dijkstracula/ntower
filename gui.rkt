@@ -2,7 +2,8 @@
 
 (require racket/gui
          racket/draw
-         "ntower.rkt")
+         "ntower.rkt"
+         "timer.rkt")
 
 ;;; default scale factor.  Probably a constant.
 (define pixels-per-gameplay-unit 64)
@@ -26,10 +27,10 @@
 
 (define morning-colour (make-object color% 255 252 163))
 (define day-colour (make-object color% 163 232 255))
-(define evening-colour (make-object color% 212 59 8))
+(define evening-colour (make-object color% 80 59 8))
 (define night-colour (make-object color% 9 16 196))
 
-(define space-colour (make-object color% 5 5 50))
+(define space-colour (make-object color% 5 5 20))
 
 (define skyline0-bitmap (read-bitmap "textures/skyline0.png"))
 (define skyline1-bitmap (read-bitmap "textures/skyline1.png"))
@@ -44,7 +45,7 @@
                         [color (make-object color% 145 124 6)]))
 
 (define (between val x y)
-  (and (>= val x) (< val y)))
+  (and (>= val x) (<= val y)))
 
 ;;; draw-skyline: dc dx bitmap
 ; draw the bitmap at the ground level.
@@ -55,23 +56,43 @@
           0 (- (* pixels-per-gameplay-unit AGROUND-LEVELS) (send bitmap get-height))
           dx (send bitmap get-height))))
 
+;;; lerp
+; produce a mix of the two values
+(define (lerp x y n)
+  (+ (* x (- 1 n))
+     (* y n)))
+
 ;;; colour-lerp
 ; produce a mix of the two supplied colours.
 (define (colour-lerp c1 c2 n)
-  (let ([r (+ (* (send c1 red) n)
-              (* (send c2 red) (- 1 n)))]
-        [g (+ (* (send c1 green) n)
-              (* (send c2 green) (- 1 n)))]
-        [b (+ (* (send c1 blue) n)
-              (* (send c2 blue) (- 1 n)))])
-    (make-object color% (truncate r) (truncate g) (truncate b))))
+  (let ([r (lerp (send c1 red) (send c2 red) n)]
+        [g (lerp (send c1 green) (send c2 green) n)]
+        [b (lerp (send c1 blue) (send c2 blue) n)])
+    (make-object color% (exact-truncate r) (exact-truncate g) (exact-truncate b))))
+
+;;; colour-3lerp
+; produce a mix of the three supplied colours, where [0,0.5] mixes
+; between c1 and c2 and [0.5, 1] m(ixes between c2 and c3
+(define (colour-3lerp c1 c2 c3 n)
+  (cond
+    [(between n 0.0 0.5) (colour-lerp c1 c2 (* n 2))]
+    [(between n 0.5 1.0) (colour-lerp c2 c3 (* (- n 0.5) 2))]))
 
 
 ;;; sky-colour time -> color%
 ; Produce the colour of the sky given a time of day.
 ; TODO: night/day cycles
 (define (sky-colour time)
-  day-colour)
+  (cond
+    [(between time 0 MORNING_BEGIN) night-colour]
+    [(between time MORNING_BEGIN MORNING_END) (colour-3lerp night-colour morning-colour day-colour
+                                                            (/ (- time MORNING_BEGIN)
+                                                               (- MORNING_END MORNING_BEGIN)))]
+    [(between time DAY_BEGIN DAY_END) day-colour]
+    [(between time EVENING_BEGIN EVENING_END) (colour-3lerp day-colour evening-colour night-colour
+                                                            (/ (- time EVENING_BEGIN)
+                                                               (- EVENING_END EVENING_BEGIN)))]
+    [(between time NIGHT_BEGIN (* 24 60)) night-colour]))
 
 ;;;;;;;;;;;;;;;;;; clock rendering ;;;;;;;;;;;;;;;;;;;
 
@@ -146,8 +167,8 @@
       (let-values ([(vx vy) (viewport-center vp)]
                    [(dx dy) (send dc get-size)])
         (let* ([ratio (/ vy dy)]
-               [sky-colour (colour-lerp (sky-colour (send state get-time))
-                                        space-colour
+               [sky-colour (colour-lerp space-colour
+                                        (sky-colour (send state get-time))               
                                         ratio)])
           (send dc set-pen "black" 0 'transparent)
           ; Draw the sky
@@ -205,16 +226,15 @@
              [y-radius (/ (get-height) 2)])
         (send p move-to x-radius y-radius)
         (send p line-to
-              (+ x-radius (* hand-scale (cos ang)))
-              (+ y-radius (* hand-scale y-radius (- (sin ang) 0))))
+              (+ x-radius (* x-radius hand-scale (cos ang)))
+              (+ y-radius (* y-radius hand-scale (- 0 (sin ang)))))
         p))
     
     ; draw-clock dc time time -> void
     (define/public (draw-clock dc hour min)
       (send dc draw-ellipse 0 0 (get-width) (get-height))
-      (print hour)
-      ; (send dc draw-path (clock-hand-path (time-to-arc (/ hour 12)) 0.8))
-      (send dc draw-path (clock-hand-path (time-to-arc (/ min 60)) 0.5)))))
+      (send dc draw-path (clock-hand-path (time-to-arc (/ hour 12)) 0.5))
+      (send dc draw-path (clock-hand-path (time-to-arc (/ min 60)) 0.8)))))
 
 (define tower-gui
   (class object%
@@ -234,32 +254,50 @@
               (send canvas render dc state)
               (send map-canvas on-paint))]))
     
-    (define map
+    (define map-frame
       (new frame%
            [label "Map"]
            [width 300]
            [height (* 300 (/ GAMEPLAY-LEVELS GAMEPLAY-WIDTH))]))
     (define map-canvas
       (new map-canvas%
-           [parent map]
+           [parent map-frame]
            [paint-callback
             (λ (canvas dc)
               (send canvas render dc state (send gameplay-canvas get-viewport/world)))]))
     
     
-    (define info
+    (define info-frame
       (new frame%
            [label "Info"]))
+    (define info-hpanel
+      (new horizontal-panel%
+           [parent info-frame]))
     (define clock-canvas
       (new clock-canvas%
-           [parent info]
+           [parent info-hpanel]
            [min-width 100]
            [min-height 100]
            [paint-callback
             (λ (canvas dc)
-              (let* ([hour (truncate (/ (send state get-time) 60))]
-                     [min (modulo (send state get-time) 60)])
+              (let* ([min (modulo (send state get-time) 60)]
+                     [hour (+ (/ min 60) (truncate (/ (send state get-time) 60)))])
                 (send canvas draw-clock dc hour min)))]))
+    (define money-canvas
+      (new canvas%
+           [parent info-hpanel]
+           [min-width 400]
+           [min-height 100]
+           [paint-callback
+            (λ (canvas dc)
+              (send dc draw-rectangle 0 0 (send canvas get-width) (send canvas get-height))
+              (send dc set-font (make-font #:size 20 #:family 'roman #:weight 'bold))
+              (send dc draw-text
+                    (format "Day ~a" (number->string (send state get-day))) 10 10)
+              (send dc draw-text
+                    (format "¶~a" (number->string (send state get-money))) 110 10)
+              (send dc draw-text
+                    (format "Status: ~a" (send state get-status-msg)) 10 60))]))
     
     
     
@@ -272,8 +310,17 @@
     
     ; show everything
     (send gameplay-frame show #t)
-    (send map show #t)
-    (send info show #t)
+    (send map-frame show #t)
+    (send info-frame show #t)
+    
+    (define looper (create-looper 30
+                                  (λ (millis)
+                                    (begin
+                                      (send state increment-time (exact-truncate (/ millis 30)))
+                                      (send gameplay-canvas refresh)
+                                      (send map-canvas refresh)
+                                      (send info-frame refresh)))))
+    (looper (current-milliseconds))
     
     (super-new)))
 
