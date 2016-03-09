@@ -316,7 +316,7 @@
     (define looper (create-looper 30
                                   (λ (millis)
                                     (begin
-                                      (send state increment-time (exact-truncate (/ millis 30)))
+                                      (send state increment-time (exact-truncate (/ millis 15)))
                                       (send gameplay-canvas refresh)
                                       (send map-canvas refresh)
                                       (send info-frame refresh)))))
